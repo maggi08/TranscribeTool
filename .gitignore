@@ -1,0 +1,24 @@
+.venv/
+__pycache__/
+*.pyc
+.claude/
+.DS_Store
+
+# Downloaded media
+*.mp4
+*.mkv
+*.webm
+*.m4a
+*.mp3
+*.wav
+*.flac
+*.ogg
+*.opus
+*.aac
+*.wma
+*.part
+*.ytdl
+
+# Transcripts & parser output
+*.txt
+!requirements.txt
