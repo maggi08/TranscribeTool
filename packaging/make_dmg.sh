@@ -5,7 +5,7 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 APP="$PROJECT_DIR/dist/youtube-tools.app"
-OUT="$PROJECT_DIR/dist/youtube-tools-0.1.0-macos-arm64.dmg"
+OUT="$PROJECT_DIR/dist/youtube-tools-macos-arm64.dmg"
 
 if [ ! -d "$APP" ]; then
     echo "Error: $APP not found. Run: pyinstaller packaging/youtube-tools.spec"

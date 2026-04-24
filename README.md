@@ -132,3 +132,15 @@ Known v1 caveats:
 - No code signing / notarization yet — on macOS, the first launch will need a right-click → Open to bypass Gatekeeper.
 - macOS build is arm64-only. Intel Macs fall back to the CLI install.
 - Linux AppImage deferred to v2.
+
+## Landing page
+
+A static marketing page lives at [docs/index.html](docs/index.html). To publish it on GitHub Pages:
+
+1. Push the repo to GitHub.
+2. Search-replace `YOUR_USERNAME` in [docs/index.html](docs/index.html) with your GitHub handle.
+3. GitHub → repo **Settings → Pages → Build and deployment → Source: Deploy from a branch**.
+4. Pick branch `main`, folder `/docs`, Save.
+5. Wait ~1 minute → site live at `https://<your-handle>.github.io/youtube-tools/`.
+
+The download button links to `releases/latest/download/youtube-tools-macos-arm64.dmg`, so every new release just needs that exact asset name attached — no page edits required.
