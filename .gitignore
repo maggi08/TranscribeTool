@@ -22,3 +22,10 @@ __pycache__/
 # Transcripts & parser output
 *.txt
 !requirements.txt
+!requirements-gui.txt
+
+# Packaging
+/build/
+/dist/
+/packaging/bin/
+*.spec.bak

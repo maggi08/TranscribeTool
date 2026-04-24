@@ -4,27 +4,27 @@ import sys
 import yt_dlp
 
 
-def download(url, output_dir, audio_only=False):
+def download(url, output_dir, audio_only=False, force=False):
+    archive = os.path.join(output_dir, ".yt-dlp-archive.txt")
+    opts = {
+        "outtmpl": os.path.join(output_dir, "%(title)s.%(ext)s"),
+        "quiet": False,
+        "no_warnings": False,
+        "overwrites": False,
+        "extractor_args": {"youtube": {"player_client": ["android_vr", "web"]}},
+    }
+    if not force:
+        opts["download_archive"] = archive
     if audio_only:
-        opts = {
-            "format": "bestaudio[ext=m4a]/bestaudio",
-            "outtmpl": os.path.join(output_dir, "%(title)s.%(ext)s"),
-            "quiet": False,
-            "no_warnings": False,
-            "extractor_args": {"youtube": {"player_client": ["android_vr", "web"]}},
-        }
+        opts["format"] = "bestaudio[ext=m4a]/bestaudio"
     else:
-        opts = {
-            "format": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
-            "outtmpl": os.path.join(output_dir, "%(title)s.%(ext)s"),
-            "merge_output_format": "mp4",
-            "quiet": False,
-            "no_warnings": False,
-            "extractor_args": {"youtube": {"player_client": ["android_vr", "web"]}},
-        }
+        opts["format"] = "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best"
+        opts["merge_output_format"] = "mp4"
     with yt_dlp.YoutubeDL(opts) as ydl:
         info = ydl.extract_info(url, download=True)
-        return info.get("title", url)
+        if not info:
+            return url  # archived / skipped — treated as success
+        return info.get("title") or url
 
 
 def read_links_from_file(filepath):
@@ -66,6 +66,12 @@ Examples:
         "-a", "--audio-only",
         action="store_true",
         help="Download audio only (m4a). ~10x smaller; ideal for transcription.",
+    )
+    parser.add_argument(
+        "-f", "--force",
+        action="store_true",
+        help="Re-download even if the video is already in the archive "
+             "(<output_dir>/.yt-dlp-archive.txt).",
     )
     return parser.parse_args()
 
@@ -117,7 +123,7 @@ def main():
         print(f"\n[{i}/{total}] {link}")
         print("-" * 60)
         try:
-            title = download(link, output_dir, audio_only=args.audio_only)
+            title = download(link, output_dir, audio_only=args.audio_only, force=args.force)
             succeeded.append((link, title))
             print(f"\n  ✓ [{i}/{total}] Done: {title}")
         except Exception as e:

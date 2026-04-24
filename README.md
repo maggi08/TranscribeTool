@@ -1,12 +1,15 @@
 # youtube-tools
 
-Three composable tools for working with YouTube content, sharing a single `.venv`:
+A small toolkit for scraping, downloading, and transcribing YouTube content. Ships as:
+
+- A **desktop GUI** (PySide6) — paste a channel / URLs / `.txt`, toggle options, watch live progress. `./run-gui.sh`
+- Four **composable shell scripts** that share one `.venv`:
 
 | Script | What it does |
 |---|---|
 | `parse.sh` | Scrape a channel → list every video URL (videos + shorts + streams) into `links.txt` |
-| `download.sh` | Download YouTube URLs as MP4 via [yt-dlp](https://github.com/yt-dlp/yt-dlp) |
-| `transcribe.sh` | Batch transcribe a folder of media via [mlx-whisper](https://github.com/ml-explore/mlx-examples/tree/main/whisper) |
+| `download.sh` | Download YouTube URLs as MP4 (or `.m4a` with `--audio-only`) via [yt-dlp](https://github.com/yt-dlp/yt-dlp) |
+| `transcribe.sh` | Batch transcribe a folder of media — uses [mlx-whisper](https://github.com/ml-explore/mlx-examples/tree/main/whisper) on Apple Silicon, [faster-whisper](https://github.com/SYSTRAN/faster-whisper) elsewhere |
 | `pipeline.sh` | Convenience wrapper that runs all three back-to-back |
 
 ## Setup
@@ -16,7 +19,25 @@ chmod +x install.sh parse.sh download.sh transcribe.sh pipeline.sh
 ./install.sh
 ```
 
-`install.sh` installs system deps (Python 3.10+, ffmpeg — via Homebrew on macOS, apt on Debian/Ubuntu) and creates a local `.venv/` with `yt-dlp` and `mlx-whisper`.
+`install.sh` installs system deps (Python 3.10+, ffmpeg — via Homebrew on macOS, apt on Debian/Ubuntu) and creates a local `.venv/` with `yt-dlp`, `mlx-whisper` (on Apple Silicon), and `faster-whisper`.
+
+To use the desktop GUI as well:
+
+```bash
+./.venv/bin/pip install -r requirements-gui.txt
+./run-gui.sh
+```
+
+## Desktop GUI
+
+Launch with `./run-gui.sh` (installs PySide6 on first run if missing). The window has four tabs:
+
+- **Parse channel** — channel handle/URL, tab selection, per-tab limit, output file.
+- **Download** — paste URLs or pick a `.txt`, toggle audio-only, pick destination.
+- **Transcribe** — pick a file or folder, pick a language, toggle **Low power mode** (forces `faster-whisper` to save battery at the cost of speed).
+- **Pipeline** — parse → download → transcribe chained in one click.
+
+A shared log pane streams live subprocess output. `Cmd+,` opens Preferences (default save folder, default language, Performance: Fast vs Low power). Settings persist at `~/Library/Application Support/youtube-tools/config.json` (macOS) or `%APPDATA%\youtube-tools\config.json` (Windows).
 
 ## Usage
 
@@ -97,3 +118,17 @@ youtube-tools/
 **Resuming a crashed transcription** — just re-run `./transcribe.sh <same folder>`. The `.transcribe_done.log` skips finished files; partially-chunked long files resume from the last completed chunk.
 
 **Starting over** — Delete `.venv/` and re-run `./install.sh`.
+
+## Packaging (distributable installer — v1: macOS + Windows)
+
+```bash
+./.venv/bin/pip install -r requirements-gui.txt pyinstaller
+./packaging/fetch_ffmpeg.sh                          # drops static ffmpeg into packaging/bin/
+./.venv/bin/pyinstaller packaging/youtube-tools.spec # builds dist/youtube-tools.app (macOS) or .exe (Windows)
+./packaging/make_dmg.sh                              # macOS only — wraps the .app into a .dmg
+```
+
+Known v1 caveats:
+- No code signing / notarization yet — on macOS, the first launch will need a right-click → Open to bypass Gatekeeper.
+- macOS build is arm64-only. Intel Macs fall back to the CLI install.
+- Linux AppImage deferred to v2.
