@@ -1,4 +1,4 @@
-# youtube-tools
+# TranscribeTool
 
 A small toolkit for scraping, downloading, and transcribing YouTube content. Ships as:
 
@@ -37,7 +37,7 @@ Launch with `./run-gui.sh` (installs PySide6 on first run if missing). The windo
 - **Transcribe** — pick a file or folder, pick a language, toggle **Low power mode** (forces `faster-whisper` to save battery at the cost of speed).
 - **Pipeline** — parse → download → transcribe chained in one click.
 
-A shared log pane streams live subprocess output. `Cmd+,` opens Preferences (default save folder, default language, Performance: Fast vs Low power). Settings persist at `~/Library/Application Support/youtube-tools/config.json` (macOS) or `%APPDATA%\youtube-tools\config.json` (Windows).
+A shared log pane streams live subprocess output. `Cmd+,` opens Preferences (default save folder, default language, Performance: Fast vs Low power). Settings persist at `~/Library/Application Support/TranscribeTool/config.json` (macOS) or `%APPDATA%\TranscribeTool\config.json` (Windows).
 
 ## Usage
 
@@ -95,15 +95,20 @@ Writes `links.txt`, downloads audio-only (`.m4a`) by default since the next step
 ## Project layout
 
 ```
-youtube-tools/
-├── install.sh          # One-time setup: system deps + shared .venv
-├── requirements.txt    # yt-dlp[default], mlx-whisper
-├── parse.sh            # wrapper → parse.py
-├── parse.py            # channel → links.txt (yt-dlp extract_flat)
-├── download.sh         # wrapper → download.py
-├── download.py         # links → MP4s (yt-dlp)
-├── transcribe.sh       # media → .txt transcripts (mlx-whisper + ffmpeg)
-├── pipeline.sh         # parse + download + transcribe in sequence
+transcribe-tool/
+├── app.py                  # GUI entry point
+├── run-gui.sh              # launches the desktop GUI from source
+├── transcribe_tool/        # PySide6 GUI package
+├── install.sh              # One-time setup: system deps + shared .venv
+├── requirements.txt        # CLI runtime deps
+├── requirements-gui.txt    # + PySide6 for the GUI
+├── pyproject.toml          # project metadata, extras, PyInstaller entry
+├── parse.sh / parse.py     # channel → links.txt (yt-dlp extract_flat)
+├── download.sh / .py       # links → media files (yt-dlp, audio-only supported)
+├── transcribe.sh / .py     # media → .txt transcripts (mlx / faster-whisper)
+├── pipeline.sh             # parse + download + transcribe in sequence
+├── packaging/              # PyInstaller spec, ffmpeg fetch, DMG builder
+├── docs/                   # GitHub Pages landing page
 └── .gitignore
 ```
 
@@ -124,7 +129,7 @@ youtube-tools/
 ```bash
 ./.venv/bin/pip install -r requirements-gui.txt pyinstaller
 ./packaging/fetch_ffmpeg.sh                          # drops static ffmpeg into packaging/bin/
-./.venv/bin/pyinstaller packaging/youtube-tools.spec # builds dist/youtube-tools.app (macOS) or .exe (Windows)
+./.venv/bin/pyinstaller packaging/transcribe-tool.spec # builds dist/TranscribeTool.app (macOS) or .exe (Windows)
 ./packaging/make_dmg.sh                              # macOS only — wraps the .app into a .dmg
 ```
 
@@ -141,6 +146,6 @@ A static marketing page lives at [docs/index.html](docs/index.html). To publish 
 2. Search-replace `YOUR_USERNAME` in [docs/index.html](docs/index.html) with your GitHub handle.
 3. GitHub → repo **Settings → Pages → Build and deployment → Source: Deploy from a branch**.
 4. Pick branch `main`, folder `/docs`, Save.
-5. Wait ~1 minute → site live at `https://<your-handle>.github.io/youtube-tools/`.
+5. Wait ~1 minute → site live at `https://<your-handle>.github.io/transcribe-tool/`.
 
-The download button links to `releases/latest/download/youtube-tools-macos-arm64.dmg`, so every new release just needs that exact asset name attached — no page edits required.
+The download button links to `releases/latest/download/TranscribeTool-macos-arm64.dmg`, so every new release just needs that exact asset name attached — no page edits required.

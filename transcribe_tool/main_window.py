@@ -19,7 +19,7 @@ from .widgets.transcribe_tab import TranscribeTab
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("youtube-tools")
+        self.setWindowTitle("TranscribeTool")
         self.resize(1000, 720)
 
         self.log = LogPane(self)

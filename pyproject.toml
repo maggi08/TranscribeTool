@@ -3,9 +3,9 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "youtube-tools"
+name = "transcribe-tool"
 version = "0.1.0"
-description = "Scrape, download, and transcribe YouTube channels."
+description = "TranscribeTool — download and transcribe YouTube channels locally."
 requires-python = ">=3.10"
 dependencies = [
     "yt-dlp[default]",
@@ -19,10 +19,10 @@ gui = ["PySide6>=6.6"]
 dev = ["pyinstaller>=6.0"]
 
 [project.scripts]
-youtube-tools-gui = "youtube_tools_gui.main:main"
+transcribe-tool = "transcribe_tool.main:main"
 
 [tool.setuptools]
 py-modules = ["parse", "download", "transcribe", "app"]
 
 [tool.setuptools.packages.find]
-include = ["youtube_tools_gui*"]
+include = ["transcribe_tool*"]

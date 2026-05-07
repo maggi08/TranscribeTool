@@ -2,7 +2,7 @@
 """PyInstaller spec — macOS (arm64) + Windows (x86_64) bundles.
 
 Run from project root:
-    pyinstaller packaging/youtube-tools.spec
+    pyinstaller packaging/transcribe-tool.spec
 """
 import platform
 import sys
@@ -85,7 +85,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name="youtube-tools",
+    name="TranscribeTool",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -101,7 +101,7 @@ coll = COLLECT(
     a.datas,
     strip=False,
     upx=False,
-    name="youtube-tools",
+    name="TranscribeTool",
 )
 
 
@@ -109,9 +109,9 @@ coll = COLLECT(
 if IS_MACOS:
     app = BUNDLE(
         coll,
-        name="youtube-tools.app",
+        name="TranscribeTool.app",
         icon=icon_path,
-        bundle_identifier="com.youtube-tools.app",
+        bundle_identifier="com.transcribetool.app",
         info_plist={
             "CFBundleShortVersionString": "0.1.0",
             "CFBundleVersion": "0.1.0",

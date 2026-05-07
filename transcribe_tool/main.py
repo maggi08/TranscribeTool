@@ -10,8 +10,8 @@ from .main_window import MainWindow
 
 def main() -> int:
     app = QApplication(sys.argv)
-    app.setApplicationName("youtube-tools")
-    app.setOrganizationName("youtube-tools")
+    app.setApplicationName("TranscribeTool")
+    app.setOrganizationName("TranscribeTool")
     window = MainWindow()
     window.show()
     return app.exec()
