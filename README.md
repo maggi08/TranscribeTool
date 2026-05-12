@@ -153,13 +153,13 @@ brew install create-dmg                              # one-time
 ### 3. Release
 
 ```bash
-gh repo create transcribe-tool --public --source=. --push   # first time only
+gh repo create TranscribeTool --public --source=. --push   # first time only
 gh release create v0.1.0 dist/TranscribeTool-macos-arm64.dmg \
     --title "v0.1.0 — first public build" \
     --notes "Drag the app into Applications. First launch: right-click → Open."
 ```
 
-Users now download the DMG via the landing page download button (which points at `releases/latest/download/TranscribeTool-macos-arm64.dmg`) or by visiting `https://github.com/<you>/transcribe-tool/releases`.
+Users now download the DMG via the landing page download button (which points at `releases/latest/download/TranscribeTool-macos-arm64.dmg`) or by visiting `https://github.com/maggi08/TranscribeTool/releases`.
 
 ### v1 caveats
 - **No code signing / notarization** — on macOS, the first launch will need **right-click → Open** to bypass Gatekeeper. Cost of fixing: $99/yr Apple Developer account; deferred to v2.
@@ -183,6 +183,6 @@ A static marketing page lives at [docs/index.html](docs/index.html). To publish 
 2. Search-replace `YOUR_USERNAME` in [docs/index.html](docs/index.html) with your GitHub handle.
 3. GitHub → repo **Settings → Pages → Build and deployment → Source: Deploy from a branch**.
 4. Pick branch `main`, folder `/docs`, Save.
-5. Wait ~1 minute → site live at `https://<your-handle>.github.io/transcribe-tool/`.
+5. Wait ~1 minute → site live at `https://maggi08.github.io/TranscribeTool/`.
 
 The download button links to `releases/latest/download/TranscribeTool-macos-arm64.dmg`, so every new release just needs that exact asset name attached — no page edits required.
