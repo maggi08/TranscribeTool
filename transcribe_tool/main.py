@@ -12,6 +12,7 @@ def main() -> int:
     app = QApplication(sys.argv)
     app.setApplicationName("TranscribeTool")
     app.setOrganizationName("TranscribeTool")
+    app.setQuitOnLastWindowClosed(True)
     window = MainWindow()
     window.show()
     return app.exec()

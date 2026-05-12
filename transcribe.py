@@ -267,7 +267,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Batch transcribe audio/video files with mlx-whisper or faster-whisper.",
     )
-    parser.add_argument("input", help="Audio/video file OR folder to process recursively")
+    parser.add_argument("inputs", nargs="+", help="One or more audio/video files OR folders (folders processed recursively)")
     parser.add_argument("--language", default=None, help="Language code (e.g. en, ru). Auto-detect if omitted.")
     parser.add_argument(
         "--backend", default="auto", choices=["auto", "mlx", "faster-whisper"],
@@ -278,10 +278,13 @@ def main() -> None:
     parser.add_argument("--compute-type", default=None, help="faster-whisper compute type (int8, float16, ...).")
     args = parser.parse_args()
 
-    target = Path(args.input).expanduser().resolve()
-    if not target.exists():
-        print(f"Error: not found: {target}", file=sys.stderr)
-        sys.exit(1)
+    targets: list[Path] = []
+    for inp in args.inputs:
+        t = Path(inp).expanduser().resolve()
+        if not t.exists():
+            print(f"Error: not found: {t}", file=sys.stderr)
+            sys.exit(1)
+        targets.append(t)
 
     # Check ffmpeg presence early — we need it for probing + chunking
     if not shutil.which("ffmpeg") or not shutil.which("ffprobe"):
@@ -297,18 +300,20 @@ def main() -> None:
             backend.compute_type = args.compute_type
     print(f"Using backend: {backend.name}")
 
-    log_dir = target if target.is_dir() else target.parent
-    progress = ProgressLog(log_dir / ".transcribe_done.log")
+    for target in targets:
+        log_dir = target if target.is_dir() else target.parent
+        progress = ProgressLog(log_dir / ".transcribe_done.log")
 
-    files = _collect_files(target)
-    if not files:
-        print(f"No audio/video files found in: {target}")
-        sys.exit(1)
-    if target.is_dir():
-        print(f"Found {len(files)} file(s) to transcribe in: {target}")
+        files = _collect_files(target)
+        if not files:
+            if target.is_dir():
+                print(f"No audio/video files found in: {target}")
+            continue
+        if target.is_dir():
+            print(f"Found {len(files)} file(s) to transcribe in: {target}")
 
-    for audio in files:
-        _transcribe_file(backend, audio, args.language, progress)
+        for audio in files:
+            _transcribe_file(backend, audio, args.language, progress)
 
     print("")
     print("=== All done ===")

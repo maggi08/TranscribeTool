@@ -44,12 +44,11 @@ class JobRunner(QObject):
         proc.setProcessEnvironment(env)
         proc.setWorkingDirectory(str(paths.project_root()))
 
-        python = paths.python_executable()
-        full_args = [script, *args]
+        program, full_args = paths.cli_command(script, args)
         self._proc = proc
         self.started.emit()
-        self.output.emit(f"$ {python} {script} {' '.join(args)}\n")
-        proc.start(python, full_args)
+        self.output.emit(f"$ {program} {' '.join(full_args)}\n")
+        proc.start(program, full_args)
 
     def cancel(self) -> None:
         if not self.is_running():

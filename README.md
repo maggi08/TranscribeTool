@@ -124,19 +124,56 @@ transcribe-tool/
 
 **Starting over** — Delete `.venv/` and re-run `./install.sh`.
 
-## Packaging (distributable installer — v1: macOS + Windows)
+## Building the desktop installer (macOS)
+
+### 1. Build the `.app` for yourself
+
+For installing on your own machine, you can skip ffmpeg bundling — the GUI's `paths.py` adds `/opt/homebrew/bin` and `/usr/local/bin` to subprocess PATH automatically, so brew's `ffmpeg` is picked up:
 
 ```bash
-./.venv/bin/pip install -r requirements-gui.txt pyinstaller
-./packaging/fetch_ffmpeg.sh                          # drops static ffmpeg into packaging/bin/
-./.venv/bin/pyinstaller packaging/transcribe-tool.spec # builds dist/TranscribeTool.app (macOS) or .exe (Windows)
-./packaging/make_dmg.sh                              # macOS only — wraps the .app into a .dmg
+.venv/bin/pip install pyinstaller
+.venv/bin/pyinstaller packaging/transcribe-tool.spec --clean --noconfirm
+cp -R dist/TranscribeTool.app /Applications/
+open /Applications/TranscribeTool.app                # right-click → Open the first time
 ```
 
-Known v1 caveats:
-- No code signing / notarization yet — on macOS, the first launch will need a right-click → Open to bypass Gatekeeper.
-- macOS build is arm64-only. Intel Macs fall back to the CLI install.
-- Linux AppImage deferred to v2.
+Build takes 3–8 minutes; the resulting `.app` is ~900 MB.
+
+### 2. Build a **distributable** `.dmg` for other users
+
+Other users won't have your brew ffmpeg, so you must bundle a static `ffmpeg`/`ffprobe`. This requires internet — run from your **own terminal**, not a sandboxed shell:
+
+```bash
+./packaging/fetch_ffmpeg.sh                          # downloads from evermeet.cx into packaging/bin/macos-arm64/
+.venv/bin/pyinstaller packaging/transcribe-tool.spec --clean --noconfirm
+brew install create-dmg                              # one-time
+./packaging/make_dmg.sh                              # writes dist/TranscribeTool-macos-arm64.dmg
+```
+
+### 3. Release
+
+```bash
+gh repo create transcribe-tool --public --source=. --push   # first time only
+gh release create v0.1.0 dist/TranscribeTool-macos-arm64.dmg \
+    --title "v0.1.0 — first public build" \
+    --notes "Drag the app into Applications. First launch: right-click → Open."
+```
+
+Users now download the DMG via the landing page download button (which points at `releases/latest/download/TranscribeTool-macos-arm64.dmg`) or by visiting `https://github.com/<you>/transcribe-tool/releases`.
+
+### v1 caveats
+- **No code signing / notarization** — on macOS, the first launch will need **right-click → Open** to bypass Gatekeeper. Cost of fixing: $99/yr Apple Developer account; deferred to v2.
+- **macOS build is arm64-only**. Intel Macs fall back to the CLI install (`./install.sh`).
+- **Windows** build needs to be done on a Windows machine (PyInstaller can't cross-compile from macOS) — same spec file.
+- **Linux** AppImage deferred to v2.
+
+### What stays on disk after uninstall
+
+Drag `TranscribeTool.app` to Trash and **two folders leak**:
+- `~/Library/Application Support/TranscribeTool/` — your settings (a few KB).
+- `~/.cache/huggingface/hub/models--Systran--faster-whisper-large-v3/` — the Whisper model (~3 GB; shared with any other Hugging Face app on the machine).
+
+Delete those manually for a clean wipe.
 
 ## Landing page
 

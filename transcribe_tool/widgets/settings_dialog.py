@@ -10,7 +10,7 @@ from PySide6.QtWidgets import (
 )
 
 from .. import backend, config
-from .transcribe_tab import LANGUAGES
+from ._constants import LANGUAGES
 
 
 class SettingsDialog(QDialog):
