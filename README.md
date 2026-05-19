@@ -134,7 +134,8 @@ For installing on your own machine, you can skip ffmpeg bundling — the GUI's `
 .venv/bin/pip install pyinstaller
 .venv/bin/pyinstaller packaging/transcribe-tool.spec --clean --noconfirm
 cp -R dist/TranscribeTool.app /Applications/
-open /Applications/TranscribeTool.app                # right-click → Open the first time
+xattr -dr com.apple.quarantine /Applications/TranscribeTool.app  # bypass Gatekeeper on first launch
+open /Applications/TranscribeTool.app
 ```
 
 Build takes 3–8 minutes; the resulting `.app` is ~900 MB.
@@ -156,16 +157,35 @@ brew install create-dmg                              # one-time
 gh repo create TranscribeTool --public --source=. --push   # first time only
 gh release create v0.1.0 dist/TranscribeTool-macos-arm64.dmg \
     --title "v0.1.0 — first public build" \
-    --notes "Drag the app into Applications. First launch: right-click → Open."
+    --notes "Drag the app into Applications. On first launch macOS will block it — see https://maggi08.github.io/TranscribeTool/#first-launch for the 2 ways to bypass (System Settings or a one-line Terminal command)."
 ```
 
 Users now download the DMG via the landing page download button (which points at `releases/latest/download/TranscribeTool-macos-arm64.dmg`) or by visiting `https://github.com/maggi08/TranscribeTool/releases`.
 
 ### v1 caveats
-- **No code signing / notarization** — on macOS, the first launch will need **right-click → Open** to bypass Gatekeeper. Cost of fixing: $99/yr Apple Developer account; deferred to v2.
+- **No code signing / notarization** — on macOS, the first launch shows a Gatekeeper warning (*"Apple could not verify TranscribeTool is free of malware"*). Recent macOS versions don't offer "Open Anyway" in the dialog itself — see [First launch on macOS](#first-launch-on-macos) below. Cost of fixing: $99/yr Apple Developer account; deferred to v2.
 - **macOS build is arm64-only**. Intel Macs fall back to the CLI install (`./install.sh`).
 - **Windows** build needs to be done on a Windows machine (PyInstaller can't cross-compile from macOS) — same spec file.
 - **Linux** AppImage deferred to v2.
+
+### First launch on macOS
+
+Because we're not code-signed, macOS Gatekeeper blocks the app the first time. Two ways to bypass — pick whichever is easier:
+
+**Option A — System Settings:**
+1. Close the warning dialog.
+2. Open **System Settings → Privacy & Security**.
+3. Scroll to the **Security** section.
+4. You'll see *"TranscribeTool was blocked from use…"* → click **Open Anyway**.
+5. The warning reappears once with an **Open** button — click it. Done.
+
+**Option B — Terminal (one command, no dialogs):**
+```bash
+xattr -dr com.apple.quarantine /Applications/TranscribeTool.app
+```
+Then double-click the app normally — no warning at all.
+
+Either way, you only do this once. Subsequent launches are a normal double-click.
 
 ### What stays on disk after uninstall
 

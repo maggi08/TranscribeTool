@@ -114,8 +114,49 @@
         </div>
 
         <p class="mt-6 text-xs text-slate-500">
-            No code signing yet — first launch on macOS: right-click → Open.
+            Not code-signed yet —
+            <a href="#first-launch" class="underline hover:text-slate-300">see "First launch on macOS"</a>.
         </p>
+    </section>
+
+    <!-- First launch instructions -->
+    <section id="first-launch" class="max-w-3xl mx-auto px-6 pb-12">
+        <div class="card-border rounded-2xl p-6">
+            <div class="flex items-start gap-4">
+                <div class="w-10 h-10 rounded-lg bg-amber-500/10 flex items-center justify-center text-xl flex-shrink-0">⚠️</div>
+                <div class="flex-1">
+                    <h3 class="text-white font-semibold mb-2">First launch on macOS</h3>
+                    <p class="text-sm text-slate-400 leading-relaxed">
+                        macOS will block the app the first time you open it
+                        (<em class="not-italic text-slate-300">"Apple could not verify TranscribeTool is free of malware…"</em>).
+                        That's because we haven't paid Apple's $99/yr signing fee yet — the app itself is fine. Two ways to bypass:
+                    </p>
+
+                    <div class="mt-4 grid md:grid-cols-2 gap-4">
+                        <div class="rounded-lg bg-black/40 border border-white/5 p-4">
+                            <div class="text-xs font-semibold uppercase tracking-wider text-violet-300 mb-2">Option A · Settings</div>
+                            <ol class="text-xs text-slate-300 space-y-1.5 list-decimal pl-4">
+                                <li>Close the warning dialog.</li>
+                                <li>Open <span class="font-semibold">System Settings → Privacy &amp; Security</span>.</li>
+                                <li>Scroll to <span class="font-semibold">Security</span>.</li>
+                                <li>Find <em class="not-italic">"TranscribeTool was blocked…"</em> → click <span class="font-semibold">Open Anyway</span>.</li>
+                                <li>Re-open the app and click <span class="font-semibold">Open</span>.</li>
+                            </ol>
+                        </div>
+
+                        <div class="rounded-lg bg-black/40 border border-white/5 p-4">
+                            <div class="text-xs font-semibold uppercase tracking-wider text-pink-300 mb-2">Option B · Terminal</div>
+                            <p class="text-xs text-slate-300 mb-2">One command, then open normally:</p>
+                            <code class="code-window block text-xs text-violet-300 bg-black/60 rounded p-2.5 break-all border border-white/5">xattr -dr com.apple.quarantine /Applications/TranscribeTool.app</code>
+                        </div>
+                    </div>
+
+                    <p class="mt-4 text-xs text-slate-500">
+                        You only do this once — every subsequent launch is a normal double-click.
+                    </p>
+                </div>
+            </div>
+        </div>
     </section>
 
     <!-- Screenshot placeholder -->
