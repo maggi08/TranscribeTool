@@ -34,6 +34,14 @@ class MlxBackend(WhisperBackend):
     def __init__(self, mlx_whisper_exe: str):
         self.exe = mlx_whisper_exe
 
+    @staticmethod
+    def _buggy_output_path(audio: Path, out_dir: Path) -> Path:
+        """mlx_whisper uses `pathlib.Path(stem).with_suffix('.txt')` which
+        wrongly treats text after any `.` in the stem as an extension.
+        Predict where it will actually write so we can rename afterwards.
+        """
+        return (out_dir / audio.stem).with_suffix(".txt")
+
     def transcribe_file(self, audio: Path, out_dir: Path, language: str | None) -> Path:
         cmd = [
             self.exe, str(audio),
@@ -49,7 +57,12 @@ class MlxBackend(WhisperBackend):
         if language:
             cmd += ["--language", language]
         subprocess.run(cmd, check=True)
-        return out_dir / (audio.stem + ".txt")
+
+        expected = out_dir / (audio.stem + ".txt")
+        buggy = self._buggy_output_path(audio, out_dir)
+        if expected != buggy and buggy.exists() and not expected.exists():
+            buggy.rename(expected)
+        return expected
 
 
 class FasterWhisperBackend(WhisperBackend):
@@ -199,16 +212,31 @@ def _transcribe_one(backend: WhisperBackend, audio: Path, out_dir: Path,
 
 
 def _transcribe_file(backend: WhisperBackend, audio: Path, language: str | None,
-                     progress: ProgressLog) -> None:
+                     progress: ProgressLog, delete_after: bool = False) -> None:
     out_dir = audio.parent
     txt = out_dir / (audio.stem + ".txt")
 
+    def _cleanup_media():
+        if not delete_after:
+            return
+        try:
+            audio.unlink()
+            print(f"  Deleted media: {audio.name}")
+        except OSError as e:
+            print(f"  Warning: could not delete {audio.name}: {e}")
+
     if progress.is_done(audio):
-        print(f"Skipping (done in previous run): {audio.name}")
-        return
+        if txt.exists():
+            print(f"Skipping (done in previous run): {audio.name}")
+            _cleanup_media()
+            return
+        # Stale log entry — log claims done but no .txt on disk.
+        # Fall through and re-transcribe.
+        print(f"Note: log says done but no .txt found — re-transcribing {audio.name}")
     if txt.exists():
         print(f"Skipping (already transcribed): {audio.name}")
         progress.mark_done(audio)
+        _cleanup_media()
         return
 
     duration = _probe_duration(audio)
@@ -242,6 +270,7 @@ def _transcribe_file(backend: WhisperBackend, audio: Path, language: str | None,
         pass
     print("")
     print(f"Output saved to: {txt}")
+    _cleanup_media()
 
 
 def _collect_files(target: Path) -> list[Path]:
@@ -251,6 +280,12 @@ def _collect_files(target: Path) -> list[Path]:
     for ext in MEDIA_EXTENSIONS:
         files.extend(target.rglob(f"*.{ext}"))
         files.extend(target.rglob(f"*.{ext.upper()}"))
+    # Skip files inside hidden directories (.duplicates, .chunks_*, .git, etc.)
+    target_parts = len(target.parts)
+    files = [
+        f for f in files
+        if not any(p.startswith(".") for p in f.parts[target_parts:-1])
+    ]
     # Dedupe case-insensitive matches on case-insensitive filesystems
     seen = set()
     unique: list[Path] = []
@@ -276,6 +311,18 @@ def main() -> None:
     )
     parser.add_argument("--model", default=None, help="Override model for faster-whisper (e.g. large-v3, medium).")
     parser.add_argument("--compute-type", default=None, help="faster-whisper compute type (int8, float16, ...).")
+    parser.add_argument(
+        "--delete-after",
+        action="store_true",
+        help="Delete the media file after a successful transcription (saves disk space). "
+             "Also cleans up already-transcribed files when found.",
+    )
+    parser.add_argument(
+        "--cleanup-only",
+        action="store_true",
+        help="Don't transcribe anything. Only delete media files whose .txt transcript already exists. "
+             "Safe to run on any folder — leaves untranscribed media untouched.",
+    )
     args = parser.parse_args()
 
     targets: list[Path] = []
@@ -291,6 +338,30 @@ def main() -> None:
         print("Error: ffmpeg and ffprobe are required.", file=sys.stderr)
         print("  macOS: brew install ffmpeg   Linux: apt-get install ffmpeg", file=sys.stderr)
         sys.exit(1)
+
+    if args.cleanup_only:
+        total_removed = 0
+        total_kept = 0
+        for target in targets:
+            files = _collect_files(target)
+            log_dir = target if target.is_dir() else target.parent
+            progress = ProgressLog(log_dir / ".transcribe_done.log")
+            for audio in files:
+                txt = audio.with_suffix(".txt")
+                if txt.exists():
+                    try:
+                        audio.unlink()
+                        print(f"  removed: {audio}")
+                        progress.mark_done(audio)
+                        total_removed += 1
+                    except OSError as e:
+                        print(f"  could not remove {audio}: {e}")
+                else:
+                    print(f"  kept (no transcript): {audio}")
+                    total_kept += 1
+        print(f"\nCleanup done — removed {total_removed} media file(s), "
+              f"kept {total_kept} (no transcript yet).")
+        return
 
     backend = select_backend(args.backend)
     if isinstance(backend, FasterWhisperBackend):
@@ -313,7 +384,8 @@ def main() -> None:
             print(f"Found {len(files)} file(s) to transcribe in: {target}")
 
         for audio in files:
-            _transcribe_file(backend, audio, args.language, progress)
+            _transcribe_file(backend, audio, args.language, progress,
+                             delete_after=args.delete_after)
 
     print("")
     print("=== All done ===")

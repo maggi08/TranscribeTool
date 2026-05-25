@@ -16,7 +16,7 @@ from PySide6.QtWidgets import (
 from .. import backend, config
 from ..jobs.pipeline_runner import PipelineRunner
 from ..paths import script_path
-from ._constants import LANGUAGES, MEDIA_EXTS
+from ._constants import BROWSERS, LANGUAGES, MEDIA_EXTS
 from .drop_text_edit import DropTextEdit
 
 try:
@@ -35,6 +35,10 @@ CHANNEL_URL_RE = re.compile(
     r"^https?://(?:www\.)?youtube\.com/(?:@[^/?#]+|c/[^/?#]+|channel/[^/?#]+|user/[^/?#]+)",
     re.IGNORECASE,
 )
+PLAYLIST_URL_RE = re.compile(
+    r"^https?://(?:www\.)?youtube\.com/(?:playlist\?list=|watch\?[^#]*[?&]list=)([A-Za-z0-9_-]+)",
+    re.IGNORECASE,
+)
 
 
 @dataclass
@@ -45,14 +49,16 @@ class InputAnalysis:
 
     @property
     def is_runnable(self) -> bool:
-        return self.kind in ("channel", "urls", "files")
+        return self.kind in ("channel", "playlist", "urls", "files")
 
 
-def _is_existing_file(s: str) -> bool:
+def _is_existing_path(s: str) -> tuple[bool, bool]:
+    """Returns (is_file, is_dir). (False, False) if path doesn't exist."""
     try:
-        return Path(s).expanduser().is_file()
+        p = Path(s).expanduser()
+        return (p.is_file(), p.is_dir())
     except OSError:
-        return False
+        return (False, False)
 
 
 HANDLE_RE = re.compile(r"^@?[A-Za-z0-9_.\-]{2,50}$")
@@ -79,8 +85,17 @@ def analyze_input(text: str) -> InputAnalysis:
 
     kinds: list[str] = []
     for it in raw_items:
-        if _is_existing_file(it):
-            kinds.append("file")
+        is_file, is_dir = _is_existing_path(it)
+        if is_file or is_dir:
+            kinds.append("local")
+        elif PLAYLIST_URL_RE.match(it):
+            # Order matters: playlist URLs often start with watch?v=..., so check
+            # this BEFORE the generic video-URL pattern.
+            m = PLAYLIST_URL_RE.match(it)
+            if m and m.group(1).startswith("RD"):
+                kinds.append("video")  # radio mixes aren't real playlists
+            else:
+                kinds.append("playlist")
         elif VIDEO_URL_RE.match(it):
             kinds.append("video")
         elif CHANNEL_URL_RE.match(it):
@@ -92,21 +107,44 @@ def analyze_input(text: str) -> InputAnalysis:
 
     unique = set(kinds)
 
-    if unique == {"file"}:
-        media = [i for i, k in zip(raw_items, kinds) if k == "file"
-                 and Path(i).expanduser().suffix.lower() in MEDIA_EXTS]
-        if not media:
+    if unique == {"local"}:
+        # Files must look like media; folders are accepted as-is (transcribe.py
+        # recurses through them and picks up every supported extension).
+        valid: list[str] = []
+        file_count = 0
+        dir_count = 0
+        for it in raw_items:
+            p = Path(it).expanduser()
+            if p.is_dir():
+                valid.append(str(p))
+                dir_count += 1
+            elif p.is_file() and p.suffix.lower() in MEDIA_EXTS:
+                valid.append(str(p))
+                file_count += 1
+        if not valid:
             return InputAnalysis(
                 "unknown", raw_items,
-                "Files are not recognised media (try .mp4 / .m4a / .mp3 / .wav etc.)"
+                "Files don't look like media (try .mp4 / .m4a / .mp3 / .wav…) "
+                "or folder is empty.",
             )
-        return InputAnalysis("files", media, f"{len(media)} local file(s) — will transcribe directly")
+        parts = []
+        if file_count:
+            parts.append(f"{file_count} file{'s' if file_count != 1 else ''}")
+        if dir_count:
+            parts.append(f"{dir_count} folder{'s' if dir_count != 1 else ''} (will recurse)")
+        return InputAnalysis(
+            "files", valid,
+            f"{' + '.join(parts)} — will transcribe directly",
+        )
 
     if unique == {"video"}:
         return InputAnalysis("urls", raw_items, f"{len(raw_items)} YouTube video URL(s) — will download then transcribe")
 
     if unique == {"channel"} and len(raw_items) == 1:
         return InputAnalysis("channel", raw_items, "YouTube channel — will parse, download, then transcribe")
+
+    if unique == {"playlist"} and len(raw_items) == 1:
+        return InputAnalysis("playlist", raw_items, "YouTube playlist — will parse, download, then transcribe")
 
     if "unknown" in unique:
         return InputAnalysis("unknown", raw_items, "Some lines aren't recognised. Use a channel handle, video URLs, or local file paths.")
@@ -145,8 +183,8 @@ class UnifiedTab(QWidget):
         ibox = QVBoxLayout(input_box)
 
         hint = QLabel(
-            "Paste a channel handle (@name), one or more YouTube URLs, "
-            "or drag & drop audio/video files."
+            "Paste a channel (@name or URL), a playlist URL, one or more "
+            "video URLs, or drag & drop audio/video files."
         )
         hint.setStyleSheet("color: #888;")
         hint.setWordWrap(True)
@@ -155,6 +193,7 @@ class UnifiedTab(QWidget):
         self.input_text = DropTextEdit()
         self.input_text.setPlaceholderText(
             "@channelname\n"
+            "https://www.youtube.com/playlist?list=...\n"
             "https://www.youtube.com/watch?v=...\n"
             "/path/to/your/file.mp4\n"
             "(or drop files here)"
@@ -230,6 +269,23 @@ class UnifiedTab(QWidget):
         dl_row.addStretch(1)
         obox.addLayout(dl_row)
 
+        # Cookies from browser (bypass YouTube anti-bot / age restrictions)
+        cookies_row = QHBoxLayout()
+        cookies_row.addWidget(QLabel("YouTube cookies from:"))
+        self.cookies_combo = QComboBox()
+        for label, code in BROWSERS:
+            self.cookies_combo.addItem(label, code)
+        self._select_browser(cfg.get("cookies_from_browser", "none"))
+        self.cookies_combo.currentIndexChanged.connect(
+            lambda _: config.set_value("cookies_from_browser", self.cookies_combo.currentData())
+        )
+        cookies_row.addWidget(self.cookies_combo)
+        cookies_hint = QLabel("(set if YouTube asks 'are you human?' or for age-restricted videos)")
+        cookies_hint.setStyleSheet("color: #888;")
+        cookies_row.addWidget(cookies_hint)
+        cookies_row.addStretch(1)
+        obox.addLayout(cookies_row)
+
         # Language + low-power
         lang_row = QHBoxLayout()
         lang_row.addWidget(QLabel("Language:"))
@@ -250,6 +306,13 @@ class UnifiedTab(QWidget):
         self.backend_label.setStyleSheet("color: #888;")
         obox.addWidget(self.backend_label)
         self._refresh_backend_label()
+
+        # Delete media after transcribe
+        self.delete_after = QCheckBox(
+            "Delete media after transcription (keep only .txt — saves disk space)"
+        )
+        self.delete_after.setChecked(bool(cfg.get("delete_media_after_transcribe", False)))
+        obox.addWidget(self.delete_after)
 
         root.addWidget(opts_box)
 
@@ -273,6 +336,13 @@ class UnifiedTab(QWidget):
                 self.language_combo.setCurrentIndex(i)
                 return
         self.language_combo.setCurrentIndex(0)
+
+    def _select_browser(self, code: str) -> None:
+        for i in range(self.cookies_combo.count()):
+            if self.cookies_combo.itemData(i) == code:
+                self.cookies_combo.setCurrentIndex(i)
+                return
+        self.cookies_combo.setCurrentIndex(0)
 
     def _browse_dest(self) -> None:
         path = QFileDialog.getExistingDirectory(self, "Save to", self.dest_path.text())
@@ -308,21 +378,22 @@ class UnifiedTab(QWidget):
     def _set_steps_for(self, kind: str) -> None:
         """Auto-enable / disable the step toggles based on input kind.
 
-        - channel: all three relevant
-        - urls:    parse irrelevant (greyed off), download + transcribe stay
-        - files:   parse + download irrelevant, only transcribe
+        - channel:  all three relevant; channel tabs + limit visible
+        - playlist: all three relevant; limit visible (no channel tabs)
+        - urls:     parse irrelevant (greyed off), download + transcribe stay
+        - files:    parse + download irrelevant, only transcribe
         - empty/unknown: leave checked, but Run will reject
         """
-        # Show/hide channel-only options
+        # Channel-tab checkboxes only apply to channels.
         channel_relevant = kind in ("channel", "empty")
-        self.tabs_label.setVisible(channel_relevant)
-        self.tab_videos.setVisible(channel_relevant)
-        self.tab_shorts.setVisible(channel_relevant)
-        self.tab_streams.setVisible(channel_relevant)
-        self.limit_label.setVisible(channel_relevant)
-        self.limit_spin.setVisible(channel_relevant)
+        for w in (self.tabs_label, self.tab_videos, self.tab_shorts, self.tab_streams):
+            w.setVisible(channel_relevant)
+        # Limit applies to channels AND playlists (yt-dlp's playlistend).
+        limit_relevant = kind in ("channel", "playlist", "empty")
+        self.limit_label.setVisible(limit_relevant)
+        self.limit_spin.setVisible(limit_relevant)
 
-        if kind == "channel":
+        if kind in ("channel", "playlist"):
             self._enable_step(self.step_parse, True, force_check=True)
             self._enable_step(self.step_download, True)
             self._enable_step(self.step_transcribe, True)
@@ -387,29 +458,37 @@ class UnifiedTab(QWidget):
 
         # --- Parse step ---
         links_path = dest_path / "links.txt"
-        if analysis.kind == "channel" and self.step_parse.isChecked():
-            channel = analysis.items[0]
-            if normalize_channel is not None:
-                normalize_channel(channel)  # raises ValueError on bad input
-            tabs = [name for name, cb in (
-                ("videos", self.tab_videos), ("shorts", self.tab_shorts), ("streams", self.tab_streams),
-            ) if cb.isChecked()]
-            if not tabs:
-                raise ValueError("Select at least one channel tab.")
-            parse_args = [channel, "-o", str(links_path), "--tabs", ",".join(tabs)]
+        if analysis.kind in ("channel", "playlist") and self.step_parse.isChecked():
+            target = analysis.items[0]
+            if analysis.kind == "channel" and normalize_channel is not None:
+                normalize_channel(target)  # raises ValueError on bad input
+            parse_args = [target, "-o", str(links_path)]
+            if analysis.kind == "channel":
+                tabs = [name for name, cb in (
+                    ("videos", self.tab_videos), ("shorts", self.tab_shorts), ("streams", self.tab_streams),
+                ) if cb.isChecked()]
+                if not tabs:
+                    raise ValueError("Select at least one channel tab.")
+                parse_args += ["--tabs", ",".join(tabs)]
             limit = self.limit_spin.value()
             if limit > 0:
                 parse_args += ["--limit", str(limit)]
+            cookies = self.cookies_combo.currentData()
+            if cookies and cookies != "none":
+                parse_args += ["--cookies-from-browser", cookies]
             steps.append(("parse", str(script_path("parse.py")), parse_args))
 
         # --- Download step ---
-        if self.step_download.isChecked() and analysis.kind in ("channel", "urls"):
+        if self.step_download.isChecked() and analysis.kind in ("channel", "playlist", "urls"):
             download_args = ["-o", str(dest_path)]
             if self.audio_only.isChecked():
                 download_args.append("--audio-only")
             if self.force_redownload.isChecked():
                 download_args.append("--force")
-            if analysis.kind == "channel":
+            cookies = self.cookies_combo.currentData()
+            if cookies and cookies != "none":
+                download_args += ["--cookies-from-browser", cookies]
+            if analysis.kind in ("channel", "playlist"):
                 download_args.append(str(links_path))
             else:
                 # write URLs to a temp file
@@ -445,6 +524,8 @@ class UnifiedTab(QWidget):
                 t_args += ["--model", cfg["faster_whisper_model"]]
             if cfg.get("faster_whisper_compute_type"):
                 t_args += ["--compute-type", cfg["faster_whisper_compute_type"]]
+            if self.delete_after.isChecked():
+                t_args.append("--delete-after")
 
             steps.append(("transcribe", str(script_path("transcribe.py")), t_args))
 

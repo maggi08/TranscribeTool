@@ -17,3 +17,15 @@ MEDIA_EXTS = {
     ".mp3", ".mp4", ".m4a", ".wav", ".flac", ".ogg", ".opus",
     ".aac", ".wma", ".webm", ".mkv", ".avi", ".mov",
 }
+
+BROWSERS: list[tuple[str, str]] = [
+    ("None — no cookies", "none"),
+    ("Chrome", "chrome"),
+    ("Safari", "safari"),
+    ("Firefox", "firefox"),
+    ("Brave", "brave"),
+    ("Edge", "edge"),
+    ("Chromium", "chromium"),
+    ("Opera", "opera"),
+    ("Vivaldi", "vivaldi"),
+]

@@ -4,17 +4,29 @@ import sys
 import yt_dlp
 
 
-def download(url, output_dir, audio_only=False, force=False):
+def download(url, output_dir, audio_only=False, force=False, cookies_browser=None):
     archive = os.path.join(output_dir, ".yt-dlp-archive.txt")
+    # Pick yt-dlp YouTube clients depending on whether we have cookies:
+    # - cookies present: 'android_vr' is skipped (it doesn't support cookies),
+    #   so use 'mweb' + 'tv' + 'web' which all support cookies and avoid the
+    #   web-only n-challenge JS obfuscation.
+    # - no cookies:      keep 'android_vr' as the primary (best at bypassing
+    #   anti-bot when unauthenticated), with 'web' as fallback.
+    if cookies_browser:
+        player_clients = ["mweb", "tv", "web"]
+    else:
+        player_clients = ["android_vr", "web"]
     opts = {
-        "outtmpl": os.path.join(output_dir, "%(title)s.%(ext)s"),
+        "outtmpl": os.path.join(output_dir, "%(title).180B [%(id)s].%(ext)s"),
         "quiet": False,
         "no_warnings": False,
         "overwrites": False,
-        "extractor_args": {"youtube": {"player_client": ["android_vr", "web"]}},
+        "extractor_args": {"youtube": {"player_client": player_clients}},
     }
     if not force:
         opts["download_archive"] = archive
+    if cookies_browser:
+        opts["cookiesfrombrowser"] = (cookies_browser,)
     if audio_only:
         opts["format"] = "bestaudio[ext=m4a]/bestaudio"
     else:
@@ -73,6 +85,14 @@ Examples:
         help="Re-download even if the video is already in the archive "
              "(<output_dir>/.yt-dlp-archive.txt).",
     )
+    parser.add_argument(
+        "--cookies-from-browser",
+        default=None,
+        choices=["chrome", "safari", "firefox", "brave", "edge", "chromium", "opera", "vivaldi"],
+        help="Use cookies from a browser where you're signed into YouTube. "
+             "Bypasses 'Sign in to confirm you're not a bot' errors and "
+             "lets you download age-restricted videos.",
+    )
     return parser.parse_args()
 
 
@@ -123,7 +143,8 @@ def main():
         print(f"\n[{i}/{total}] {link}")
         print("-" * 60)
         try:
-            title = download(link, output_dir, audio_only=args.audio_only, force=args.force)
+            title = download(link, output_dir, audio_only=args.audio_only,
+                             force=args.force, cookies_browser=args.cookies_from_browser)
             succeeded.append((link, title))
             print(f"\n  ✓ [{i}/{total}] Done: {title}")
         except Exception as e:

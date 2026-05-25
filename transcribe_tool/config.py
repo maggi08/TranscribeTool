@@ -23,6 +23,8 @@ DEFAULTS: dict[str, Any] = {
     "whisper_backend": "auto",  # "auto" | "mlx" | "faster-whisper"
     "faster_whisper_model": "large-v3",
     "faster_whisper_compute_type": "int8",
+    "delete_media_after_transcribe": False,
+    "cookies_from_browser": "none",  # "none" | chrome | safari | firefox | brave | edge | ...
     "window_geometry": None,
 }
 

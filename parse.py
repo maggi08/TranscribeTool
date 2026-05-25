@@ -8,6 +8,30 @@ import yt_dlp
 DEFAULT_TABS = ("videos", "shorts", "streams")
 KNOWN_TABS = {"videos", "shorts", "streams", "live"}
 
+PLAYLIST_ONLY_RE = re.compile(
+    r"^https?://(?:www\.)?youtube\.com/playlist\?list=([A-Za-z0-9_-]+)",
+    re.IGNORECASE,
+)
+WATCH_WITH_LIST_RE = re.compile(
+    r"^https?://(?:www\.)?youtube\.com/watch\?[^#]*[?&]list=([A-Za-z0-9_-]+)",
+    re.IGNORECASE,
+)
+
+
+def extract_playlist_url(raw):
+    """If `raw` is a YouTube playlist URL (either form), return a canonical
+    /playlist?list=ID URL. Otherwise return None.
+    """
+    s = raw.strip()
+    m = PLAYLIST_ONLY_RE.match(s)
+    if m:
+        return f"https://www.youtube.com/playlist?list={m.group(1)}"
+    m = WATCH_WITH_LIST_RE.match(s)
+    if m and not m.group(1).startswith("RD"):
+        # Skip auto-generated radio mixes (RDxxx) — they're infinite
+        return f"https://www.youtube.com/playlist?list={m.group(1)}"
+    return None
+
 
 def normalize_channel(raw):
     """
@@ -47,8 +71,18 @@ def normalize_video_url(url):
     return url
 
 
-def collect_tab(base_url, tab, limit=None):
+def collect_tab(base_url, tab, limit=None, cookies_browser=None):
     """Return the list of video URLs listed on one channel tab."""
+    url = f"{base_url}/{tab}"
+    return _collect_from_url(url, label=tab, limit=limit, cookies_browser=cookies_browser)
+
+
+def collect_playlist(playlist_url, limit=None, cookies_browser=None):
+    """Return the list of video URLs from a YouTube playlist."""
+    return _collect_from_url(playlist_url, label="playlist", limit=limit, cookies_browser=cookies_browser)
+
+
+def _collect_from_url(url, label, limit=None, cookies_browser=None):
     opts = {
         "extract_flat": True,
         "quiet": True,
@@ -57,17 +91,18 @@ def collect_tab(base_url, tab, limit=None):
     }
     if limit:
         opts["playlistend"] = int(limit)
+    if cookies_browser:
+        opts["cookiesfrombrowser"] = (cookies_browser,)
 
-    url = f"{base_url}/{tab}"
     with yt_dlp.YoutubeDL(opts) as ydl:
         try:
             info = ydl.extract_info(url, download=False)
         except yt_dlp.utils.DownloadError as e:
-            print(f"  {tab}: skipped ({e})")
+            print(f"  {label}: skipped ({e})")
             return []
 
     if not info:
-        print(f"  {tab}: skipped (no data)")
+        print(f"  {label}: skipped (no data)")
         return []
 
     entries = info.get("entries") or []
@@ -90,7 +125,7 @@ def collect_tab(base_url, tab, limit=None):
             u = f"https://www.youtube.com/watch?v={u}"
         urls.append(normalize_video_url(u))
 
-    print(f"  {tab}: {len(urls)} videos")
+    print(f"  {label}: {len(urls)} videos")
     return urls
 
 
@@ -110,7 +145,7 @@ Examples:
     )
     parser.add_argument(
         "channel",
-        help="Channel handle (@name), full URL, or tab URL.",
+        help="Channel handle (@name), channel URL, channel tab URL, or playlist URL.",
     )
     parser.add_argument(
         "-o", "--output",
@@ -128,45 +163,65 @@ Examples:
         default=None,
         help="Max videos per tab (passes playlistend to yt-dlp). Useful for testing.",
     )
+    parser.add_argument(
+        "--cookies-from-browser",
+        default=None,
+        choices=["chrome", "safari", "firefox", "brave", "edge", "chromium", "opera", "vivaldi"],
+        help="Use cookies from a browser where you're signed into YouTube. "
+             "Required for private playlists or when YouTube asks 'are you human?'.",
+    )
     return parser.parse_args()
 
 
 def main():
     args = parse_args()
 
-    try:
-        base_url, explicit_tab = normalize_channel(args.channel)
-    except ValueError as e:
-        print(f"Error: {e}")
-        sys.exit(1)
-
-    if explicit_tab:
-        tabs = [explicit_tab]
-    else:
-        tabs = [t.strip() for t in args.tabs.split(",") if t.strip()]
-        unknown = [t for t in tabs if t not in KNOWN_TABS]
-        if unknown:
-            print(f"Warning: unknown tab(s) ignored: {', '.join(unknown)}")
-            tabs = [t for t in tabs if t in KNOWN_TABS]
-        if not tabs:
-            print("Error: no valid tabs requested.")
-            sys.exit(1)
-
     output_path = os.path.abspath(os.path.expanduser(args.output))
     os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
-
     bar = "=" * 60
-    print(bar)
-    print(f"Channel: {base_url}")
-    print(f"Tabs:    {', '.join(tabs)}")
-    if args.limit:
-        print(f"Limit:   {args.limit} per tab")
-    print(f"Output:  {output_path}")
-    print(bar)
 
-    all_urls = []
-    for tab in tabs:
-        all_urls.extend(collect_tab(base_url, tab, limit=args.limit))
+    # Playlist path — short-circuit; tabs / handle logic doesn't apply.
+    playlist_url = extract_playlist_url(args.channel)
+    if playlist_url:
+        print(bar)
+        print(f"Playlist: {playlist_url}")
+        if args.limit:
+            print(f"Limit:    {args.limit}")
+        print(f"Output:   {output_path}")
+        print(bar)
+        all_urls = collect_playlist(playlist_url, limit=args.limit,
+                                    cookies_browser=args.cookies_from_browser)
+    else:
+        try:
+            base_url, explicit_tab = normalize_channel(args.channel)
+        except ValueError as e:
+            print(f"Error: {e}")
+            sys.exit(1)
+
+        if explicit_tab:
+            tabs = [explicit_tab]
+        else:
+            tabs = [t.strip() for t in args.tabs.split(",") if t.strip()]
+            unknown = [t for t in tabs if t not in KNOWN_TABS]
+            if unknown:
+                print(f"Warning: unknown tab(s) ignored: {', '.join(unknown)}")
+                tabs = [t for t in tabs if t in KNOWN_TABS]
+            if not tabs:
+                print("Error: no valid tabs requested.")
+                sys.exit(1)
+
+        print(bar)
+        print(f"Channel: {base_url}")
+        print(f"Tabs:    {', '.join(tabs)}")
+        if args.limit:
+            print(f"Limit:   {args.limit} per tab")
+        print(f"Output:  {output_path}")
+        print(bar)
+
+        all_urls = []
+        for tab in tabs:
+            all_urls.extend(collect_tab(base_url, tab, limit=args.limit,
+                                        cookies_browser=args.cookies_from_browser))
 
     deduped = list(dict.fromkeys(all_urls))
     dup_count = len(all_urls) - len(deduped)
