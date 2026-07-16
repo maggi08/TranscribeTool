@@ -264,8 +264,19 @@ class UnifiedTab(QWidget):
         self.audio_only = QCheckBox("Audio only (m4a — smaller)")
         self.audio_only.setChecked(bool(cfg.get("default_audio_only", True)))
         self.force_redownload = QCheckBox("Force re-download (ignore archive)")
+        self.prefer_subtitles = QCheckBox("Prefer subtitles (skip download + Whisper)")
+        self.prefer_subtitles.setChecked(bool(cfg.get("prefer_subtitles", True)))
+        self.prefer_subtitles.setToolTip(
+            "If a video has good subtitles (human, or the original-language "
+            "auto-caption), use them as the transcript and skip downloading "
+            "the media and running Whisper."
+        )
+        self.prefer_subtitles.toggled.connect(
+            lambda checked: config.set_value("prefer_subtitles", bool(checked))
+        )
         dl_row.addWidget(self.audio_only)
         dl_row.addWidget(self.force_redownload)
+        dl_row.addWidget(self.prefer_subtitles)
         dl_row.addStretch(1)
         obox.addLayout(dl_row)
 
@@ -485,6 +496,11 @@ class UnifiedTab(QWidget):
                 download_args.append("--audio-only")
             if self.force_redownload.isChecked():
                 download_args.append("--force")
+            if self.prefer_subtitles.isChecked():
+                download_args.append("--prefer-subtitles")
+                lang = self.language_combo.currentData()
+                if lang:
+                    download_args += ["--language", lang]
             cookies = self.cookies_combo.currentData()
             if cookies and cookies != "none":
                 download_args += ["--cookies-from-browser", cookies]

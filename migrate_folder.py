@@ -95,6 +95,7 @@ def fetch_title_id_map(urls: list[str]) -> dict[str, str]:
         "skip_download": True,
         "extract_flat": False,
         "extractor_args": {"youtube": {"player_client": ["android_vr", "web"]}},
+        "js_runtimes": {"deno": {}, "node": {}},
     }
     id_to_title: dict[str, str] = {}
     with yt_dlp.YoutubeDL(opts) as ydl:

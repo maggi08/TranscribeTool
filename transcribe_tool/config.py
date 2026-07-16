@@ -16,6 +16,7 @@ DEFAULTS: dict[str, Any] = {
     "schema_version": SCHEMA_VERSION,
     "default_output_dir": str(Path.home() / "Movies" / "TranscribeTool"),
     "default_audio_only": True,
+    "prefer_subtitles": True,  # try good YouTube subs before downloading + Whisper
     "default_tabs": ["videos", "shorts", "streams"],
     "default_limit": None,
     "default_language": "ru",
