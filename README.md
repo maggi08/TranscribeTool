@@ -83,6 +83,30 @@ Output folder defaults to the folder of the `.txt` file (or cwd). Files saved as
 
 Recursively finds media files, splits anything >10 min into 10-min chunks to keep RAM under control, writes a `.txt` transcript next to each media file. Progress is saved in `.transcribe_done.log` inside the target folder — re-run the same command to resume after a crash.
 
+Pick a smaller model when quality can suffer: `--model tiny|base|small|medium|large-v3`
+(default `large-v3`, or set `WHISPER_MODEL`). `tiny` is 71 MB against 2.9 GB.
+
+#### Memory safety — read this if the Mac ever reboots on you
+
+`large-v3` holds **~2.9 GB** of unified memory. On an 8 GB Mac that survives on its own,
+but **not** alongside a nearly-full disk: macOS swaps, cannot grow swap when the disk is
+full, the kernel stalls on memory allocation and the hardware watchdog reboots the machine.
+That produced three kernel panics on 2026-07-13..15 (`watchdog timeout` + `LOW swap space`).
+
+Two guards live in `transcribe.py`:
+
+- **Disk preflight** — refuses to start below 8 GB free, re-checked before every file
+  (a long run fills the disk itself with downloads, chunks and transcripts). Tune with
+  `WHISPER_MIN_DISK_GB`; `0` disables it.
+- **Global lock** (`~/.cache/whisper/transcribe.lock`) — one whisper process per machine.
+  Shared with the [pako](../pako) assistant, which also transcribes (Telegram voice
+  messages): if its bot is mid-transcription your run waits instead of loading a second
+  2.9 GB model. Seeing `waiting for the global lock` is normal, not a hang.
+
+> `transcribe.py` is kept **byte-identical** with `pako/.claude/skills/transcribe/scripts/transcribe.py`.
+> Fix a bug in one, copy to the other — they were forked once and silently drifted apart.
+> It must stay Python 3.9-compatible (pako's skill venv is the system Python).
+
 ### 4. Full pipeline
 
 ```bash

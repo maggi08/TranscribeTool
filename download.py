@@ -7,22 +7,29 @@ from pathlib import Path
 
 import yt_dlp
 
+# SHARED FILE — kept byte-identical in two repos (like transcribe.py):
+#   - pako/.claude/skills/transcribe/scripts/download.py
+#   - TranscribeTool/download.py
+# The two forks had diverged in opposite directions; this is the merged superset.
+# Fix bugs here and copy across.
 
-def _network_opts(output_dir, cookies_browser):
+
+def _network_opts(output_dir, cookies_browser, cookies_file=None):
     """Shared yt-dlp options for talking to YouTube (client + JS runtime +
     cookies + output template). Used by inspection, subtitle fetch, and the
     media download so they behave identically."""
     # Pick yt-dlp YouTube clients depending on whether we have cookies:
     # - cookies present: 'android_vr' is skipped (it doesn't support cookies),
     #   so use 'mweb' + 'tv' + 'web' which all support cookies.
-    # - no cookies:      keep 'android_vr' as the primary (best at bypassing
-    #   anti-bot when unauthenticated), with 'web' as fallback.
+    # - no cookies:      'ios' + 'android_vr' first (best at bypassing anti-bot
+    #   when unauthenticated), 'web' as fallback. Extra clients are just ordered
+    #   fallbacks — yt-dlp tries them in turn, so more is more resilient.
     # YouTube now applies the n-challenge across all these clients, so a JS
     # runtime (see js_runtimes below) is required to unlock real formats.
-    if cookies_browser:
+    if cookies_browser or cookies_file:
         player_clients = ["mweb", "tv", "web"]
     else:
-        player_clients = ["android_vr", "web"]
+        player_clients = ["ios", "android_vr", "web"]
     opts = {
         "outtmpl": os.path.join(output_dir, "%(title).180B [%(id)s].%(ext)s"),
         "extractor_args": {"youtube": {"player_client": player_clients}},
@@ -34,6 +41,8 @@ def _network_opts(output_dir, cookies_browser):
     }
     if cookies_browser:
         opts["cookiesfrombrowser"] = (cookies_browser,)
+    if cookies_file:
+        opts["cookiefile"] = cookies_file
     return opts
 
 
@@ -88,13 +97,14 @@ def _record_archive(archive, video_id, force):
         pass
 
 
-def _try_subtitle_first(url, output_dir, language, cookies_browser, archive, force):
+def _try_subtitle_first(url, output_dir, language, cookies_browser, cookies_file,
+                        archive, force):
     """If the video has *good* subtitles (human/manual, or the original-language
     auto-caption `<lang>-orig`), fetch only the subtitle, convert it to the
     transcript .txt, and return the title. Return None to fall back to a normal
     media download (no good subtitles, or anything went wrong)."""
     try:
-        inspect = _network_opts(output_dir, cookies_browser)
+        inspect = _network_opts(output_dir, cookies_browser, cookies_file)
         inspect.update({"skip_download": True, "quiet": True, "no_warnings": True})
         with yt_dlp.YoutubeDL(inspect) as ydl:
             info = ydl.extract_info(url, download=False)
@@ -121,7 +131,7 @@ def _try_subtitle_first(url, output_dir, language, cookies_browser, archive, for
             _record_archive(archive, video_id, force)
             return title
 
-        sub_opts = _network_opts(output_dir, cookies_browser)
+        sub_opts = _network_opts(output_dir, cookies_browser, cookies_file)
         sub_opts.update({
             "skip_download": True,
             "quiet": True,
@@ -152,16 +162,16 @@ def _try_subtitle_first(url, output_dir, language, cookies_browser, archive, for
 
 
 def download(url, output_dir, audio_only=False, force=False, cookies_browser=None,
-             language=None, prefer_subtitles=False):
+             cookies_file=None, language=None, prefer_subtitles=False):
     archive = os.path.join(output_dir, ".yt-dlp-archive.txt")
 
     if prefer_subtitles:
         title = _try_subtitle_first(url, output_dir, language, cookies_browser,
-                                    archive, force)
+                                    cookies_file, archive, force)
         if title is not None:
             return title, "subtitle"
 
-    opts = _network_opts(output_dir, cookies_browser)
+    opts = _network_opts(output_dir, cookies_browser, cookies_file)
     opts.update({"quiet": False, "no_warnings": False, "overwrites": False})
     if not force:
         opts["download_archive"] = archive
@@ -232,6 +242,12 @@ Examples:
              "lets you download age-restricted videos.",
     )
     parser.add_argument(
+        "--cookies",
+        default=None,
+        help="Path to a Netscape cookies.txt file (alternative to --cookies-from-browser). "
+             "More reliable than browser cookies under launchd / headless.",
+    )
+    parser.add_argument(
         "--language",
         default=None,
         help="Target language code (e.g. ru, en) for --prefer-subtitles. "
@@ -300,6 +316,7 @@ def main():
             title, source = download(
                 link, output_dir, audio_only=args.audio_only,
                 force=args.force, cookies_browser=args.cookies_from_browser,
+                cookies_file=args.cookies,
                 language=args.language, prefer_subtitles=args.prefer_subtitles,
             )
             succeeded.append((link, title))

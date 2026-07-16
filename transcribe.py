@@ -1,13 +1,43 @@
 #!/usr/bin/env python3
-"""Batch transcription with pluggable Whisper backends (mlx / faster-whisper)."""
+"""Batch transcription with pluggable Whisper backends (mlx / faster-whisper).
+
+SHARED FILE — kept byte-identical in two repos:
+  - pako/.claude/skills/transcribe/scripts/transcribe.py   (the assistant's skill)
+  - TranscribeTool/transcribe.py                           (mass transcription)
+Fix bugs here and copy across; they were forked once already and drifted.
+Must stay Python 3.9-compatible (pako's skill venv is the system 3.9).
+
+Memory safety on an 8 GB Mac — why the guards below exist. Whisper large-v3 is
+~2.9 GB of unified memory. Load two at once, OR load one while the disk is nearly
+full, and the machine swaps; with no free disk macOS cannot grow swap, the kernel
+stalls on VM allocation, watchdogd misses its 90 s check-in and the hardware
+watchdog reboots the Mac. That happened three times on 2026-07-13..15, signature
+`watchdog timeout: no checkins from watchdogd` + `LOW swap space`.
+
+Two guards, each closing a different hole:
+  1. whisper_lock() — a machine-wide inter-process lock, so pako's bot, the agent
+     invoking this script directly, and TranscribeTool can never load two models at
+     once. An in-process semaphore cannot see the other two.
+     Held per mlx_whisper invocation, NOT per batch: a multi-hour mass run must not
+     starve the bot's voice messages — they interleave between chunks. See
+     MlxBackend.transcribe_file and the `hold_batch_lock` note in main().
+  2. _require_disk() — refuses to start when the disk cannot back the swap the model
+     will need. Checked before the batch and before every file, because a long run
+     fills the disk itself (downloads, chunks, transcripts).
+"""
 from __future__ import annotations
 
 import argparse
+import contextlib
+import fcntl
 import os
 import platform
+import re
 import shutil
 import subprocess
 import sys
+import time
+from contextlib import contextmanager
 from pathlib import Path
 
 MEDIA_EXTENSIONS = (
@@ -15,6 +45,141 @@ MEDIA_EXTENSIONS = (
     "aac", "wma", "webm", "mkv", "avi", "mov",
 )
 CHUNK_SECONDS = 600
+
+DEFAULT_MLX_MODEL = "mlx-community/whisper-large-v3-mlx"
+DEFAULT_FW_MODEL = "large-v3"
+
+# Short names → mlx repo ids, so `--model tiny` works on Apple Silicon too.
+_MLX_ALIASES = {
+    "tiny": "mlx-community/whisper-tiny",
+    "base": "mlx-community/whisper-base",
+    "small": "mlx-community/whisper-small",
+    "medium": "mlx-community/whisper-medium",
+    "large": DEFAULT_MLX_MODEL,
+    "large-v3": DEFAULT_MLX_MODEL,
+}
+
+
+def _resolve_mlx_model(name: str | None) -> str:
+    if not name:
+        return DEFAULT_MLX_MODEL
+    if "/" in name:            # full repo id — pass through
+        return name
+    return _MLX_ALIASES.get(name, name)
+
+
+def _resolve_fw_model(name: str | None) -> str:
+    if not name:
+        return DEFAULT_FW_MODEL
+    if "/" in name:            # someone passed an mlx repo id — take the tail
+        return name.rsplit("/", 1)[-1].replace("whisper-", "").replace("-mlx", "")
+    return name
+
+
+# ---------------------------------------------------------------------------
+# Disk guard — the panics were a full disk, not just a big model
+# ---------------------------------------------------------------------------
+
+# Gate on DISK, not free RAM: macOS always reports little free RAM (this machine
+# idles at memory pressure "warn"), so a RAM check would refuse everything. What
+# actually killed it was swap having nowhere to grow.
+MIN_DISK_GB = float(os.environ.get("WHISPER_MIN_DISK_GB", "8"))
+DATA_VOLUME = os.environ.get("WHISPER_DATA_VOLUME", "/System/Volumes/Data")
+
+
+def _disk_free_gb() -> float:
+    for target in (DATA_VOLUME, "/"):
+        try:
+            return shutil.disk_usage(target).free / 1024 ** 3
+        except OSError:
+            continue
+    return float("inf")  # can't tell → don't block the user
+
+
+def _resource_line() -> str:
+    """One-line resource snapshot for the run log."""
+    parts = ["disk_free=%.1fG" % _disk_free_gb()]
+    try:
+        raw = subprocess.check_output(
+            ["sysctl", "-n", "vm.swapusage"], stderr=subprocess.DEVNULL,
+        ).decode()
+        m = re.search(r"used\s*=\s*([\d.]+)M.*?free\s*=\s*([\d.]+)M", raw)
+        if m:
+            parts.append("swap_used=%sM swap_free=%sM" % (m.group(1), m.group(2)))
+    except Exception:
+        pass  # non-macOS or sysctl missing — disk figure is the one that matters
+    return "  ".join(parts)
+
+
+def _require_disk() -> None:
+    """Refuse to load a ~3 GB model when the disk cannot back the swap it needs."""
+    free = _disk_free_gb()
+    if free >= MIN_DISK_GB:
+        return
+    print("", file=sys.stderr)
+    print(f"Error: only {free:.1f} GB free on disk (need >= {MIN_DISK_GB:.0f} GB).",
+          file=sys.stderr)
+    print("  Whisper needs ~3 GB of memory. With a full disk macOS cannot grow swap,",
+          file=sys.stderr)
+    print("  the kernel stalls and the watchdog reboots the Mac (this already happened",
+          file=sys.stderr)
+    print("  three times on 2026-07-13..15). Free some space, then re-run.", file=sys.stderr)
+    print("  Override at your own risk: WHISPER_MIN_DISK_GB=0", file=sys.stderr)
+    sys.exit(3)
+
+
+# ---------------------------------------------------------------------------
+# Global inter-process lock — only ONE whisper process at a time, machine-wide
+# ---------------------------------------------------------------------------
+
+LOCK_TIMEOUT = int(os.environ.get("WHISPER_LOCK_TIMEOUT", "3600"))
+
+
+def _lock_path() -> Path:
+    raw = os.environ.get("WHISPER_LOCK")
+    if raw:
+        return Path(raw).expanduser()
+    # Machine-wide, deliberately NOT under a repo name: pako's bot, the agent and
+    # TranscribeTool must all contend for the SAME file or the lock protects nothing.
+    return Path.home() / ".cache" / "whisper" / "transcribe.lock"
+
+
+@contextmanager
+def whisper_lock(timeout: int = LOCK_TIMEOUT):
+    """Block until no other transcription is running (advisory flock).
+
+    flock is released automatically when the process dies, so a crash can never
+    leave a stale lock behind.
+    """
+    path = _lock_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fh = path.open("w")
+    waited = 0
+    while True:
+        try:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            break
+        except OSError:
+            if waited == 0:
+                print("  Another transcription is running — waiting for the global lock...")
+            if waited >= timeout:
+                fh.close()
+                print(
+                    f"Error: another transcription is still running after {timeout}s. "
+                    "Refusing to load a second model (8 GB machine).",
+                    file=sys.stderr,
+                )
+                sys.exit(2)
+            time.sleep(2)
+            waited += 2
+    try:
+        fh.write(str(os.getpid()))
+        fh.flush()
+        yield
+    finally:
+        with contextlib.suppress(Exception):
+            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+        fh.close()
 
 
 # ---------------------------------------------------------------------------
@@ -31,8 +196,9 @@ class WhisperBackend:
 class MlxBackend(WhisperBackend):
     name = "mlx-whisper (fast)"
 
-    def __init__(self, mlx_whisper_exe: str):
+    def __init__(self, mlx_whisper_exe: str, model: str | None = None):
         self.exe = mlx_whisper_exe
+        self.model = _resolve_mlx_model(model)
 
     @staticmethod
     def _buggy_output_path(audio: Path, out_dir: Path) -> Path:
@@ -47,7 +213,7 @@ class MlxBackend(WhisperBackend):
             self.exe, str(audio),
             "--output-dir", str(out_dir),
             "--output-format", "txt",
-            "--model", "mlx-community/whisper-large-v3-mlx",
+            "--model", self.model,
             "--condition-on-previous-text", "False",
             "--compression-ratio-threshold", "1.8",
             "--temperature", "0",
@@ -56,7 +222,13 @@ class MlxBackend(WhisperBackend):
         ]
         if language:
             cmd += ["--language", language]
-        subprocess.run(cmd, check=True)
+        # Lock scope = exactly the window where the 2.9 GB model is resident, i.e. this
+        # subprocess. Deliberately NOT the whole batch: a multi-hour mass run would then
+        # starve pako's bot, and a voice message would hang until the lock timeout instead
+        # of slipping in between chunks. Per-invocation keeps the one-model-at-a-time
+        # guarantee while letting the two callers interleave.
+        with whisper_lock():
+            subprocess.run(cmd, check=True)
 
         expected = out_dir / (audio.stem + ".txt")
         buggy = self._buggy_output_path(audio, out_dir)
@@ -68,8 +240,8 @@ class MlxBackend(WhisperBackend):
 class FasterWhisperBackend(WhisperBackend):
     name = "faster-whisper (low power)"
 
-    def __init__(self, model_name: str = "large-v3", compute_type: str = "int8"):
-        self.model_name = model_name
+    def __init__(self, model_name: str | None = None, compute_type: str = "int8"):
+        self.model_name = _resolve_fw_model(model_name)
         self.compute_type = compute_type
         self._model = None
 
@@ -112,10 +284,11 @@ def _find_mlx_whisper() -> str | None:
     return shutil.which("mlx_whisper")
 
 
-def select_backend(preference: str = "auto") -> WhisperBackend:
+def select_backend(preference: str = "auto", model: str | None = None) -> WhisperBackend:
     """Choose a backend based on preference and available hardware/installs.
 
     preference: "auto" | "mlx" | "faster-whisper"
+    model: short name ("tiny", "medium") or full repo id; None = backend default.
     """
     if preference == "mlx":
         exe = _find_mlx_whisper()
@@ -124,17 +297,17 @@ def select_backend(preference: str = "auto") -> WhisperBackend:
                 "mlx-whisper not available. "
                 "Switch to Low power mode (faster-whisper) or run ./install.sh on an Apple Silicon Mac."
             )
-        return MlxBackend(exe)
+        return MlxBackend(exe, model)
 
     if preference == "faster-whisper":
-        return FasterWhisperBackend()
+        return FasterWhisperBackend(model)
 
     # auto
     if _is_apple_silicon():
         exe = _find_mlx_whisper()
         if exe:
-            return MlxBackend(exe)
-    return FasterWhisperBackend()
+            return MlxBackend(exe, model)
+    return FasterWhisperBackend(model)
 
 
 # ---------------------------------------------------------------------------
@@ -168,7 +341,14 @@ class ProgressLog:
 # ffmpeg helpers
 # ---------------------------------------------------------------------------
 
-def _probe_duration(audio: Path) -> int:
+def _probe_duration(audio: Path) -> int | None:
+    """Duration in seconds, or None if ffprobe could not tell.
+
+    None (not 0!) matters: a 0 used to satisfy `duration <= CHUNK_SECONDS`, which
+    silently disabled chunking and fed the whole file to whisper — a 3h file is
+    ~690 MB of PCM plus ~550 MB of mel spectrogram ON TOP of the 2.9 GB model.
+    Unknown duration must mean "chunk it", never "swallow it whole".
+    """
     try:
         out = subprocess.check_output(
             ["ffprobe", "-v", "error", "-show_entries", "format=duration",
@@ -177,7 +357,7 @@ def _probe_duration(audio: Path) -> int:
         ).decode().strip()
         return int(float(out))
     except Exception:
-        return 0
+        return None
 
 
 def _split_into_chunks(audio: Path, chunk_dir: Path, ext: str) -> list[Path]:
@@ -187,12 +367,14 @@ def _split_into_chunks(audio: Path, chunk_dir: Path, ext: str) -> list[Path]:
         print("  Chunks already exist, resuming...")
         return existing
     print(f"  Splitting into {CHUNK_SECONDS}s chunks...")
+    # check=False: a split failure must return [] so the caller can fall back to the
+    # whole file, rather than aborting the run with CalledProcessError.
     subprocess.run(
         ["ffmpeg", "-y", "-i", str(audio),
          "-f", "segment", "-segment_time", str(CHUNK_SECONDS),
          "-c", "copy", "-reset_timestamps", "1",
          str(chunk_dir / f"chunk_%03d.{ext}")],
-        check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     )
     return sorted(chunk_dir.glob(f"chunk_*.{ext}"))
 
@@ -239,16 +421,33 @@ def _transcribe_file(backend: WhisperBackend, audio: Path, language: str | None,
         _cleanup_media()
         return
 
+    # Re-check per file: a long batch fills the disk itself (downloads, chunks, .txt),
+    # so a run that was safe at the start can walk into the danger zone by file 200.
+    _require_disk()
+
     duration = _probe_duration(audio)
     print("")
-    print(f"=== {audio.name} ({duration}s) ===")
+    print(f"=== {audio.name} ({duration if duration is not None else '?'}s) ===")
+    print(f"  [resources] {_resource_line()}")
 
-    if duration <= CHUNK_SECONDS:
+    # Unknown duration → chunk (memory-safe default). See _probe_duration.
+    single = duration is not None and duration <= CHUNK_SECONDS
+    chunks: list[Path] = []
+    chunk_dir = out_dir / f".{audio.stem}_chunks"
+
+    if not single:
+        chunks = _split_into_chunks(audio, chunk_dir, audio.suffix.lstrip("."))
+        if not chunks:
+            # ffmpeg couldn't segment (typically a short voice note whose probe failed).
+            # Falling back to the whole file is safe here precisely because it's short —
+            # and it beats returning an empty transcript.
+            print("  Could not split — falling back to the whole file.")
+            shutil.rmtree(chunk_dir, ignore_errors=True)
+            single = True
+
+    if single:
         _transcribe_one(backend, audio, out_dir, language)
     else:
-        ext = audio.suffix.lstrip(".")
-        chunk_dir = out_dir / f".{audio.stem}_chunks"
-        chunks = _split_into_chunks(audio, chunk_dir, ext)
         total = len(chunks)
         for i, chunk in enumerate(chunks, 1):
             print(f"  [{i}/{total}]")
@@ -309,7 +508,11 @@ def main() -> None:
         help="Whisper backend: auto (default), mlx (fast, Apple Silicon), "
              "faster-whisper (low power, cross-platform).",
     )
-    parser.add_argument("--model", default=None, help="Override model for faster-whisper (e.g. large-v3, medium).")
+    parser.add_argument(
+        "--model", default=None,
+        help="Model for EITHER backend: short name (tiny, base, small, medium, large-v3) "
+             "or a full repo id. Default: large-v3. Env: WHISPER_MODEL.",
+    )
     parser.add_argument("--compute-type", default=None, help="faster-whisper compute type (int8, float16, ...).")
     parser.add_argument(
         "--delete-after",
@@ -363,29 +566,41 @@ def main() -> None:
               f"kept {total_kept} (no transcript yet).")
         return
 
-    backend = select_backend(args.backend)
-    if isinstance(backend, FasterWhisperBackend):
-        if args.model:
-            backend.model_name = args.model
-        if args.compute_type:
-            backend.compute_type = args.compute_type
+    # Precedence: --model > WHISPER_MODEL env > backend default (large-v3).
+    # Previously --model was applied ONLY to faster-whisper, so on Apple Silicon
+    # (which always picks MlxBackend) it was silently ignored.
+    model = args.model or os.environ.get("WHISPER_MODEL") or None
+    backend = select_backend(args.backend, model)
+    if args.compute_type and isinstance(backend, FasterWhisperBackend):
+        backend.compute_type = args.compute_type
     print(f"Using backend: {backend.name}")
+    print(f"Resources: {_resource_line()}")
 
-    for target in targets:
-        log_dir = target if target.is_dir() else target.parent
-        progress = ProgressLog(log_dir / ".transcribe_done.log")
+    _require_disk()  # fail fast, before loading anything
 
-        files = _collect_files(target)
-        if not files:
+    # Where the lock lives depends on how long the model stays resident:
+    #   MlxBackend    — fresh mlx_whisper subprocess per file/chunk, nothing resident in
+    #                   between, so it locks per invocation (see MlxBackend.transcribe_file)
+    #                   and a long batch never blocks the other caller for more than a chunk.
+    #   FasterWhisper — caches the model in-process until exit (transcribe.py `_load`), so
+    #                   it has no choice but to hold the lock for the whole batch.
+    hold_batch_lock = isinstance(backend, FasterWhisperBackend)
+    with (whisper_lock() if hold_batch_lock else contextlib.nullcontext()):
+        for target in targets:
+            log_dir = target if target.is_dir() else target.parent
+            progress = ProgressLog(log_dir / ".transcribe_done.log")
+
+            files = _collect_files(target)
+            if not files:
+                if target.is_dir():
+                    print(f"No audio/video files found in: {target}")
+                continue
             if target.is_dir():
-                print(f"No audio/video files found in: {target}")
-            continue
-        if target.is_dir():
-            print(f"Found {len(files)} file(s) to transcribe in: {target}")
+                print(f"Found {len(files)} file(s) to transcribe in: {target}")
 
-        for audio in files:
-            _transcribe_file(backend, audio, args.language, progress,
-                             delete_after=args.delete_after)
+            for audio in files:
+                _transcribe_file(backend, audio, args.language, progress,
+                                 delete_after=args.delete_after)
 
     print("")
     print("=== All done ===")
